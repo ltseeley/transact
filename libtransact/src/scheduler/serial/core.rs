@@ -183,7 +183,9 @@ impl SchedulerCore {
     ///
     /// Returns `true` if the scheduler should shutdown; returns `false` otherwise.
     fn try_shutdown(&mut self) -> Result<bool, CoreError> {
+        debug!("Acquiring try_shutdown");
         let shared = self.shared_lock.lock()?;
+        debug!("Acquired try_shutdown");
         if shared.finalized()
             && self.current_batch.is_none()
             && shared.unscheduled_batches_is_empty()
@@ -200,8 +202,10 @@ impl SchedulerCore {
                 self.execution_tx.send(None)?;
             }
 
+            debug!("Dropping try_shutdown");
             Ok(true)
         } else {
+            debug!("Dropping try_shutdown");
             Ok(false)
         }
     }
@@ -216,13 +220,18 @@ impl SchedulerCore {
                 return Ok(());
             }
 
+            debug!("Acquiring try_schedule_next");
             match self.shared_lock.lock()?.pop_unscheduled_batch() {
                 Some(unscheduled_batch) => {
+                    debug!("Dropped try_schedule_next");
                     self.txn_queue =
                         VecDeque::from(unscheduled_batch.batch().transactions().to_vec());
                     self.current_batch = Some(unscheduled_batch);
                 }
-                None => return Ok(()),
+                None => {
+                    debug!("Dropped try_schedule_next");
+                    return Ok(())
+                }
             }
         }
 
@@ -249,6 +258,8 @@ impl SchedulerCore {
             }
         };
 
+        debug!("Getting context ID");
+
         let context_id = match self.previous_context {
             Some(previous_context_id) => self
                 .context_lifecycle
@@ -256,10 +267,13 @@ impl SchedulerCore {
             None => self.context_lifecycle.create_context(&[], &self.state_id),
         };
 
+        debug!("Sending execution task");
         self.current_txn = Some(transaction_pair.transaction().header_signature().into());
         self.execution_tx
             .send(Some(ExecutionTask::new(transaction_pair, context_id)))?;
         self.next_ready = false;
+
+        debug!("Execution task sent");
 
         Ok(())
     }
@@ -343,23 +357,30 @@ impl SchedulerCore {
 
         let batch_result = BatchExecutionResult { batch, receipts };
 
+        debug!("Acquiring send_batch_result");
         self.shared_lock.lock()?.result_callback()(Some(batch_result));
+        debug!("Dropped send_batch_result");
 
         Ok(())
     }
 
     fn send_scheduler_error(&mut self, error: SchedulerError) -> Result<(), CoreError> {
+        debug!("Acquiring send_scheduler_error");
         self.shared_lock.lock()?.error_callback()(error);
+        debug!("Dropped send_scheduler_error");
         Ok(())
     }
 
     fn run(&mut self) -> Result<(), CoreError> {
         loop {
+            debug!("Receiving run");
             match self.rx.recv() {
                 Ok(CoreMessage::BatchAdded) => {
+                    debug!("Received BatchAdded");
                     self.try_schedule_next()?;
                 }
                 Ok(CoreMessage::ExecutionResult(task_notification)) => {
+                    debug!("Received ExecutionResult");
                     let current_txn_id = self.current_txn.clone().unwrap_or_else(|| "".into());
                     match task_notification {
                         ExecutionTaskCompletionNotification::Valid(context_id, transaction_id) => {
@@ -401,10 +422,12 @@ impl SchedulerCore {
                     self.try_schedule_next()?;
                 }
                 Ok(CoreMessage::Next) => {
+                    debug!("Received Next");
                     self.next_ready = true;
                     self.try_schedule_next()?;
                 }
                 Ok(CoreMessage::Cancelled(sender)) => {
+                    debug!("Received Cancelled");
                     // If a batch is currently executing, return it using the provided sender
                     sender.send(self.current_batch.take()).map_err(|_| {
                         CoreError::Internal("aborted batch receiver dropped".into())
@@ -419,12 +442,14 @@ impl SchedulerCore {
                     }
                 }
                 Ok(CoreMessage::Finalized) => {
+                    debug!("Received Finalized");
                     // The scheduler is finalized now, so it may be ready to shutdown
                     if self.try_shutdown()? {
                         break;
                     }
                 }
                 Err(err) => {
+                    debug!("Received err");
                     // This is expected if the other side shuts down
                     // before this end. However, it would be more
                     // elegant to gracefully handle it by sending a

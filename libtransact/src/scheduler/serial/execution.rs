@@ -45,9 +45,14 @@ impl Iterator for SerialExecutionTaskIterator {
         // Send a message to the scheduler requesting the next task be sent.
         match self.tx.send(CoreMessage::Next) {
             Ok(_) => {
+                debug!("Receiving next");
                 match self.rx.recv() {
-                    Ok(task) => task,
+                    Ok(task) => {
+                        debug!("Received next");
+                        task
+                    }
                     Err(_) => {
+                        debug!("Received next");
                         // This is expected if the other side shuts down before this
                         // end.
                         None

@@ -95,7 +95,9 @@ impl Scheduler for SerialScheduler {
         &mut self,
         callback: Box<dyn Fn(Option<BatchExecutionResult>) + Send>,
     ) -> Result<(), SchedulerError> {
+        debug!("Acquiring set_result_callback");
         self.shared_lock.lock()?.set_result_callback(callback);
+        debug!("Dropped set_result_callback");
         Ok(())
     }
 
@@ -103,12 +105,16 @@ impl Scheduler for SerialScheduler {
         &mut self,
         callback: Box<dyn Fn(SchedulerError) + Send>,
     ) -> Result<(), SchedulerError> {
+        debug!("Acquiring set_error_callback");
         self.shared_lock.lock()?.set_error_callback(callback);
+        debug!("Dropped set_error_callback");
         Ok(())
     }
 
     fn add_batch(&mut self, batch: BatchPair) -> Result<(), SchedulerError> {
+        debug!("Acquiring add_batch");
         let mut shared = self.shared_lock.lock()?;
+        debug!("Acquired add_batch");
 
         if shared.finalized() {
             return Err(SchedulerError::SchedulerFinalized);
@@ -128,11 +134,14 @@ impl Scheduler for SerialScheduler {
         // must be exclusive with finalize.
         self.core_tx.send(core::CoreMessage::BatchAdded)?;
 
+        debug!("Dropping add_batch");
         Ok(())
     }
 
     fn cancel(&mut self) -> Result<Vec<BatchPair>, SchedulerError> {
+        debug!("Acquiring cancel1");
         let mut unscheduled_batches = self.shared_lock.lock()?.drain_unscheduled_batches();
+        debug!("Dropped cancel1");
 
         // Notify the core thread to cancel and wait for it to return an aborted batch. If the
         // scheduler was already finalized, it may have already shutdown, which could cause message
@@ -143,16 +152,26 @@ impl Scheduler for SerialScheduler {
             .core_tx
             .send(core::CoreMessage::Cancelled(sender))
             .is_err()
-            && !self.shared_lock.lock()?.finalized()
+            && {
+                debug!("Acquiring cancel2");
+                !self.shared_lock.lock()?.finalized() }
         {
             return Err(SchedulerError::Internal(
                 "scheduler's core thread disconnected before finalization".into(),
             ));
         }
+        debug!("Dropped cancel2");
+        debug!("Receiving cancel");
         let aborted_batch = match receiver.recv() {
-            Ok(batch) => batch,
+            Ok(batch) => {
+                debug!("Received cancel");
+                batch
+            }
             Err(_) => {
+                debug!("Received cancel");
+                debug!("Acquiring cancel3");
                 if self.shared_lock.lock()?.finalized() {
+                    debug!("Dropped cancel3");
                     None
                 } else {
                     return Err(SchedulerError::Internal(
@@ -173,7 +192,9 @@ impl Scheduler for SerialScheduler {
     }
 
     fn finalize(&mut self) -> Result<(), SchedulerError> {
+        debug!("Acquiring finalize");
         self.shared_lock.lock()?.set_finalized(true);
+        debug!("Dropped finalize");
         self.core_tx.send(core::CoreMessage::Finalized)?;
         Ok(())
     }
